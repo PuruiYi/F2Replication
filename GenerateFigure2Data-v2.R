@@ -2,10 +2,11 @@
 
 library(haven)
 library(lfe) # for fixed effect 
-#library(marginaleffects)
+library(estimatr)
 library(fixest)
 library(broom)
 library(dplyr)
+
 
 # ---------- ESTIMATE GLOBAL RESPONSE WITH BASELINE REGRESSION SPECIFICATION
 ########################################################
@@ -44,16 +45,16 @@ y2_vars <- grep("^_y2_", names(data), value = TRUE)
 yi_vars_quoted <- paste0("`", yi_vars, "`")
 y2_vars_quoted <- paste0("`", y2_vars, "`")
 
-# felm formula string with predictors and fixed effect variables
-formula_str <- paste0(
-  "growthWDI ~ temp + temp_sq + precip + precip_sq + year + ",
-  paste(yi_vars_quoted, collapse = " + "), " + ",
-  paste(y2_vars_quoted, collapse = " + "), " + iso_id"
-  # " | 0 | 0 | 0"
-)
-# Fixed effect linear model method with above independent variables
-model <- lm(as.formula(formula_str), data = data)
-summary(model)
+# # felm formula string with predictors and fixed effect variables
+# formula_str <- paste0(
+#   "growthWDI ~ temp + temp_sq + precip + precip_sq + year + ",
+#   paste(yi_vars_quoted, collapse = " + "), " + ",
+#   paste(y2_vars_quoted, collapse = " + "), " + iso_id"
+#   # " | 0 | 0 | 0"
+# )
+# # Fixed effect linear model method with above independent variables
+# model <- lm(as.formula(formula_str), data = data)
+# summary(model)
 
 # # feols formula string 
 # formula_str <- paste0(
@@ -65,6 +66,47 @@ summary(model)
 # model <- feols(as.formula(formula_str), data = data, cluster = ~iso_id)
 
 
+# lm formula string with predictors and fixed effect variables
+formula_str_lm <- paste0(
+  "growthWDI ~ temp + temp_sq + precip + precip_sq + year + ",
+  paste(yi_vars_quoted, collapse = " + "), " + ",
+  paste(y2_vars_quoted, collapse = " + "), " + iso_id"
+)
+# linear model method with categorical (factor) variables
+model_lm <- lm(as.formula(formula_str_lm), data = data)
+summary(model_lm)
+
+
+formula_str <- paste0(
+  "growthWDI ~ temp + temp_sq + precip + precip_sq + year + ",
+  paste(yi_vars_quoted, collapse = " + "), " + ",
+  paste(y2_vars_quoted, collapse = " + "), " + iso_id"
+)
+
+model <- lm_robust(as.formula(formula_str),
+                   data = data,
+                   clusters = iso_id,
+                   se_type = "stata")
+summary(model)
+
+# Compare sample sizes
+cat("lm observations:", nobs(model_lm), "\n")
+cat("lm_robust observations:", nobs(model), "\n")
+cat("Difference:", nobs(model_lm) - nobs(model), "\n")
+
+cluster_sizes <- table(data$iso_id)
+
+# Singletons
+singleton_clusters <- names(cluster_sizes[cluster_sizes == 1])
+cat("Number of singleton clusters:", length(singleton_clusters), "\n")
+cat("Singleton cluster IDs:", singleton_clusters, "\n")
+
+
+# Count observations per cluster
+table(data$iso_id)
+
+# Any clusters with only 1 observation?
+sum(table(data$iso_id) == 1)
 
 # Extract model coefficients
 coefs <- coef(model)
@@ -91,9 +133,9 @@ pred_data$precip_sq <- pred_data$precip^2
 all_coefs <- coef(model)
 coef_names <- c("temp", "temp_sq", "precip", "precip_sq")
 # Create design matrix matching the available coefficients
-#X_pred <- model.matrix(~ temp + temp_sq + precip + precip_sq 
-#                     ,data = pred_data)
-X_pred <- model.matrix(~ temp + temp_sq, data = pred_data)
+X_pred <- model.matrix(~ temp + temp_sq + precip + precip_sq
+                    ,data = pred_data)
+# X_pred <- model.matrix(~ temp + temp_sq, data = pred_data)
 
 
 common_names <- intersect(colnames(X_pred), names(coefs))
