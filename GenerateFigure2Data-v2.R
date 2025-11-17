@@ -2,7 +2,10 @@
 
 library(haven)
 library(lfe) # for fixed effect 
-library(estimatr)
+library(sandwich)
+library(lmtest)
+library(miceadds)
+library(estimatr) # lm_robust
 library(fixest)
 library(broom)
 library(dplyr)
@@ -45,6 +48,13 @@ y2_vars <- grep("^_y2_", names(data), value = TRUE)
 yi_vars_quoted <- paste0("`", yi_vars, "`")
 y2_vars_quoted <- paste0("`", y2_vars, "`")
 
+
+# Testing for coefficients and Cluster-Robust Standard Errors in STATA style
+
+########################################################
+#  felm：
+########################################################
+
 # # felm formula string with predictors and fixed effect variables
 # formula_str <- paste0(
 #   "growthWDI ~ temp + temp_sq + precip + precip_sq + year + ",
@@ -56,15 +66,23 @@ y2_vars_quoted <- paste0("`", y2_vars, "`")
 # model <- lm(as.formula(formula_str), data = data)
 # summary(model)
 
-# # feols formula string 
+
+########################################################
+#  feol:
+########################################################
+
+# # feols formula string
 # formula_str <- paste0(
-#   "growthWDI ~ temp + temp_sq + precip + precip_sq + + year + iso_id +",
+#   "growthWDI ~ temp + temp_sq + precip + precip_sq +",
 #   paste(yi_vars_quoted, collapse = " + "), " + ",
-#   paste(y2_vars_quoted, collapse = " + ")
+#   paste(y2_vars_quoted, collapse = " + ")," + year + iso_id "
 # )
 # # Fixed effect linear model method with above independent variables
 # model <- feols(as.formula(formula_str), data = data, cluster = ~iso_id)
 
+########################################################
+#  lm: correct coefs but incorrect se 
+########################################################
 
 # lm formula string with predictors and fixed effect variables
 formula_str_lm <- paste0(
@@ -73,33 +91,64 @@ formula_str_lm <- paste0(
   paste(y2_vars_quoted, collapse = " + "), " + iso_id"
 )
 # linear model method with categorical (factor) variables
-model_lm <- lm(as.formula(formula_str_lm), data = data)
-summary(model_lm)
-
-
-formula_str <- paste0(
-  "growthWDI ~ temp + temp_sq + precip + precip_sq + year + ",
-  paste(yi_vars_quoted, collapse = " + "), " + ",
-  paste(y2_vars_quoted, collapse = " + "), " + iso_id"
-)
-
-model <- lm_robust(as.formula(formula_str),
-                   data = data,
-                   clusters = iso_id,
-                   se_type = "stata")
+model <- lm(as.formula(formula_str_lm), data = data)
 summary(model)
 
-# Compare sample sizes
-cat("lm observations:", nobs(model_lm), "\n")
-cat("lm_robust observations:", nobs(model), "\n")
-cat("Difference:", nobs(model_lm) - nobs(model), "\n")
+########################################################
+#  lm + sandwich: very close standard deviation
+########################################################
+# default HC3
+coeftest(model, vcov = vcovHC(model, cluster = ~iso_id),type= "HC0")
+print(coeftest)
 
-cluster_sizes <- table(data$iso_id)
 
-# Singletons
-singleton_clusters <- names(cluster_sizes[cluster_sizes == 1])
-cat("Number of singleton clusters:", length(singleton_clusters), "\n")
-cat("Singleton cluster IDs:", singleton_clusters, "\n")
+########################################################
+#  lm.cluster from miceadds: difference in both coef and cluster se
+########################################################
+# formula_str_lm_cluster <- paste0(
+#   "growthWDI ~ temp + temp_sq + precip + precip_sq + year + ",
+#   paste(yi_vars_quoted, collapse = " + "), " + ",
+#   paste(y2_vars_quoted, collapse = " + "), " + iso_id"
+# )
+# model <- lm.cluster(formula_str_lm_cluster,
+#                  cluster = 'iso_id',
+#                  data = data)
+# summary(model)
+
+
+
+########################################################
+#  lm_robust: cannot correctly handle rank deficiency in modelling, so
+#  the year coefficients are a bit different than correct 
+########################################################
+
+# formula_str <- paste0(
+#   "growthWDI ~ temp + temp_sq + precip + precip_sq + year + ",
+#   paste(yi_vars_quoted, collapse = " + "), " + ",
+#   paste(y2_vars_quoted, collapse = " + "), " + iso_id"
+# )
+# 
+# model <- lm_robust(as.formula(formula_str),
+#                    data = data,
+#                    clusters = iso_id,
+#                    se_type = "stata")
+# summary(model)
+
+########################################################
+#  testing purpose
+########################################################
+
+# # Compare sample sizes
+# cat("lm observations:", nobs(model_lm), "\n")
+# cat("lm_robust observations:", nobs(model), "\n")
+# cat("Difference:", nobs(model_lm) - nobs(model), "\n")
+# 
+# cluster_sizes <- table(data$iso_id)
+# 
+# # Singletons
+# singleton_clusters <- names(cluster_sizes[cluster_sizes == 1])
+# cat("Number of singleton clusters:", length(singleton_clusters), "\n")
+# cat("Singleton cluster IDs:", singleton_clusters, "\n")
 
 
 # Count observations per cluster
@@ -157,12 +206,20 @@ z_crit <- qnorm(0.90)
 pred_data$min90 <- pred_data$estimate - z_crit  * pred_data$stderr
 pred_data$max90 <- pred_data$estimate + z_crit  * pred_data$stderr
 
+# global_response <- pred_data %>%
+#   # Change the name of the header
+#   mutate(dof = model$df.residual,  # degrees of freedom
+#          parm = paste0("_at#", row_number())  # parameter to comply with STATA format
+#   ) %>%
+#   select(temp, estimate, stderr, min90, max90, dof, parm)
+
 global_response <- pred_data %>%
   # Change the name of the header
-  mutate(dof = model$df.residual,  # degrees of freedom
+  mutate(dof = df.residual(model),  # degrees of freedom
          parm = paste0("_at#", row_number())  # parameter to comply with STATA format
   ) %>%
   select(temp, estimate, stderr, min90, max90, dof, parm)
+
 write.csv(global_response, "data/output/estimatedGlobalResponse.csv", row.names = FALSE)
 
 # Write out main dataset subset
