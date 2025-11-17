@@ -18,7 +18,6 @@ library(dplyr)
 
 # Load data
 data <- read_dta("data/input/GrowthClimateDataset.dta")
-# data <- read.csv("data/input/GrowthClimateDataset.csv",stringsAsFactors=FALSE)
 
 # Generate variables
 data$temp <- data$UDel_temp_popweight
@@ -49,42 +48,8 @@ yi_vars_quoted <- paste0("`", yi_vars, "`")
 y2_vars_quoted <- paste0("`", y2_vars, "`")
 
 
-# Testing for coefficients and Cluster-Robust Standard Errors in STATA style
-
-########################################################
-#  felm：
-########################################################
-
-# # felm formula string with predictors and fixed effect variables
-# formula_str <- paste0(
-#   "growthWDI ~ temp + temp_sq + precip + precip_sq + year + ",
-#   paste(yi_vars_quoted, collapse = " + "), " + ",
-#   paste(y2_vars_quoted, collapse = " + "), " + iso_id"
-#   # " | 0 | 0 | 0"
-# )
-# # Fixed effect linear model method with above independent variables
-# model <- lm(as.formula(formula_str), data = data)
-# summary(model)
-
-
-########################################################
-#  feol:
-########################################################
-
-# # feols formula string
-# formula_str <- paste0(
-#   "growthWDI ~ temp + temp_sq + precip + precip_sq +",
-#   paste(yi_vars_quoted, collapse = " + "), " + ",
-#   paste(y2_vars_quoted, collapse = " + ")," + year + iso_id "
-# )
-# # Fixed effect linear model method with above independent variables
-# model <- feols(as.formula(formula_str), data = data, cluster = ~iso_id)
-
-########################################################
-#  lm: correct coefs but incorrect se 
-########################################################
-
-# lm formula string with predictors and fixed effect variables
+# lm regression model with Cluster-Robust Standard Error in iso_id
+# lm formula string with continuous and categorical variables
 formula_str_lm <- paste0(
   "growthWDI ~ temp + temp_sq + precip + precip_sq + year + ",
   paste(yi_vars_quoted, collapse = " + "), " + ",
@@ -92,75 +57,15 @@ formula_str_lm <- paste0(
 )
 # linear model method with categorical (factor) variables
 model <- lm(as.formula(formula_str_lm), data = data)
-summary(model)
 
-########################################################
-#  lm + sandwich: very close standard deviation
-########################################################
-# default HC3
-coeftest(model, vcov = vcovHC(model, cluster = ~iso_id),type= "HC0")
-print(coeftest)
-
-
-########################################################
-#  lm.cluster from miceadds: difference in both coef and cluster se
-########################################################
-# formula_str_lm_cluster <- paste0(
-#   "growthWDI ~ temp + temp_sq + precip + precip_sq + year + ",
-#   paste(yi_vars_quoted, collapse = " + "), " + ",
-#   paste(y2_vars_quoted, collapse = " + "), " + iso_id"
-# )
-# model <- lm.cluster(formula_str_lm_cluster,
-#                  cluster = 'iso_id',
-#                  data = data)
-# summary(model)
-
-
-
-########################################################
-#  lm_robust: cannot correctly handle rank deficiency in modelling, so
-#  the year coefficients are a bit different than correct 
-########################################################
-
-# formula_str <- paste0(
-#   "growthWDI ~ temp + temp_sq + precip + precip_sq + year + ",
-#   paste(yi_vars_quoted, collapse = " + "), " + ",
-#   paste(y2_vars_quoted, collapse = " + "), " + iso_id"
-# )
-# 
-# model <- lm_robust(as.formula(formula_str),
-#                    data = data,
-#                    clusters = iso_id,
-#                    se_type = "stata")
-# summary(model)
-
-########################################################
-#  testing purpose
-########################################################
-
-# # Compare sample sizes
-# cat("lm observations:", nobs(model_lm), "\n")
-# cat("lm_robust observations:", nobs(model), "\n")
-# cat("Difference:", nobs(model_lm) - nobs(model), "\n")
-# 
-# cluster_sizes <- table(data$iso_id)
-# 
-# # Singletons
-# singleton_clusters <- names(cluster_sizes[cluster_sizes == 1])
-# cat("Number of singleton clusters:", length(singleton_clusters), "\n")
-# cat("Singleton cluster IDs:", singleton_clusters, "\n")
-
-
-# Count observations per cluster
-table(data$iso_id)
-
-# Any clusters with only 1 observation?
-sum(table(data$iso_id) == 1)
+#  lm + sandwich: Cluster-Robust standard error
+coefs <- coeftest(model, vcov = vcovHC(model, cluster = ~iso_id, type= 'HC0')) # default type: HC3
+coef_names <- rownames(coefs)
 
 # Extract model coefficients
-coefs <- coef(model)
-coef_temp <- coef(model)["temp"]
-coef_temp_sq <- coef(model)["temp_sq"]
+coef_temp <- coefs["temp","Estimate"]
+coef_temp_sq <- coefs["temp_sq","Estimate"]
+
 
 # Calculate optimal temperature
 optimal_temp <- -coef_temp / (2 * coef_temp_sq)   # x-value of vertex: -b/2a 
@@ -179,24 +84,27 @@ pred_data <- data.frame(
 pred_data$precip_sq <- pred_data$precip^2
 
 # Get coefficients from model
-all_coefs <- coef(model)
-coef_names <- c("temp", "temp_sq", "precip", "precip_sq")
+names <- c("temp", "temp_sq", "precip", "precip_sq")
+coef_names_available <- names[names %in% coef_names]
+
 # Create design matrix matching the available coefficients
 X_pred <- model.matrix(~ temp + temp_sq + precip + precip_sq
                     ,data = pred_data)
 # X_pred <- model.matrix(~ temp + temp_sq, data = pred_data)
 
 
-common_names <- intersect(colnames(X_pred), names(coefs))
+common_names <- intersect(colnames(X_pred), coef_names_available)
 X_pred <- X_pred[, common_names, drop = FALSE]
-coefs <- coefs[common_names]
+X_pred
+
+coefs <- coefs[common_names,"Estimate"]
 cat(" coefs :", coefs, "\n")
 
 # Calculate predictions
 pred_data$estimate <- as.vector(X_pred %*% coefs)
 
 # Calculate standard errors
-vcov_mat <- vcov(model)
+vcov_mat <- vcovHC(model, cluster = ~iso_id, type= 'HC0')
 vcov_subset <- vcov_mat[common_names, common_names, drop = FALSE]
 print(vcov_subset)
 pred_data$stderr <- sqrt(diag(X_pred %*% vcov_subset %*% t(X_pred)))
